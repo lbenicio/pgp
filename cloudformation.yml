@@ -1,0 +1,287 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+    S3 + CloudFront CDN + ACM certificate for pgp.
+    Domain: pgp.lbenicio.dev
+    Deploy in any region — cert is in us-east-1 (CloudFront requirement).
+    DNS at Cloudflare; add validation CNAMEs and site CNAME there.
+
+Parameters:
+    DomainName:
+        Type: String
+        Description: Primary domain.
+        Default: pgp.lbenicio.dev
+
+    CertificateArn:
+        Type: String
+        Description: >
+            ARN of an existing ACM certificate in us-east-1 covering the domain.
+            Leave empty to create a new one (stack must be deployed to us-east-1).
+        Default: arn:aws:acm:us-east-1:527540700211:certificate/ce8e9217-72ca-45de-a03c-b7557b0a7cdc
+
+    PriceClass:
+        Type: String
+        AllowedValues: [PriceClass_All, PriceClass_200, PriceClass_100]
+        Default: PriceClass_100
+
+Conditions:
+    CreateCertificate: !Equals [!Ref CertificateArn, ""]
+
+Resources:
+    # ── S3 bucket (private, CloudFront OAC only) ────────────────────────────
+    SiteBucket:
+        Type: AWS::S3::Bucket
+        Properties:
+            BucketName: !Ref DomainName
+            PublicAccessBlockConfiguration:
+                BlockPublicAcls: true
+                BlockPublicPolicy: true
+                IgnorePublicAcls: true
+                RestrictPublicBuckets: true
+            VersioningConfiguration:
+                Status: Enabled
+            BucketEncryption:
+                ServerSideEncryptionConfiguration:
+                    - ServerSideEncryptionByDefault:
+                          SSEAlgorithm: AES256
+            Tags:
+                - Key: Project
+                  Value: pgp
+                - Key: ManagedBy
+                  Value: cloudformation
+
+    # ── CloudFront OAC ──────────────────────────────────────────────────────
+    CloudFrontOAC:
+        Type: AWS::CloudFront::OriginAccessControl
+        Properties:
+            OriginAccessControlConfig:
+                Name: pgp-oac
+                Description: OAC — only CloudFront can read the S3 origin
+                OriginAccessControlOriginType: s3
+                SigningBehavior: always
+                SigningProtocol: sigv4
+
+    # ── Bucket policy ───────────────────────────────────────────────────────
+    SiteBucketPolicy:
+        Type: AWS::S3::BucketPolicy
+        Properties:
+            Bucket: !Ref SiteBucket
+            PolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    - Sid: AllowCloudFrontOACRead
+                      Effect: Allow
+                      Principal:
+                          Service: cloudfront.amazonaws.com
+                      Action: s3:GetObject
+                      Resource: !Join ["", [!GetAtt SiteBucket.Arn, "/*"]]
+                    - Sid: DenyNonSecureTransport
+                      Effect: Deny
+                      Principal: "*"
+                      Action: "s3:*"
+                      Resource:
+                          - !Join ["", [!GetAtt SiteBucket.Arn, "/*"]]
+                          - !GetAtt SiteBucket.Arn
+                      Condition:
+                          Bool:
+                              "aws:SecureTransport": "false"
+
+    # ── ACM certificate (only created if CertificateArn is empty) ───────────
+    SiteCertificate:
+        Condition: CreateCertificate
+        Type: AWS::CertificateManager::Certificate
+        Properties:
+            DomainName: !Ref DomainName
+            ValidationMethod: DNS
+            Tags:
+                - Key: Project
+                  Value: pgp
+
+    # ── Security headers ────────────────────────────────────────────────────
+    SecurityHeadersPolicy:
+        Type: AWS::CloudFront::ResponseHeadersPolicy
+        Properties:
+            ResponseHeadersPolicyConfig:
+                Name: pgp-security-headers
+                Comment: Security headers for pgp.lbenicio.dev
+                SecurityHeadersConfig:
+                    StrictTransportSecurity:
+                        Override: true
+                        AccessControlMaxAgeSec: 63072000
+                        IncludeSubdomains: false
+                        Preload: false
+                    ContentTypeOptions:
+                        Override: true
+                    FrameOptions:
+                        Override: true
+                        FrameOption: DENY
+                    ReferrerPolicy:
+                        Override: true
+                        ReferrerPolicy: strict-origin-when-cross-origin
+                    XSSProtection:
+                        Override: true
+                        Protection: true
+                        ModeBlock: true
+                    ContentSecurityPolicy:
+                        Override: true
+                        ContentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
+                CustomHeadersConfig:
+                    Items:
+                        - Header: Permissions-Policy
+                          Value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+                          Override: true
+
+    # ── CloudFront distribution ─────────────────────────────────────────────
+    CloudFrontDistribution:
+        Type: AWS::CloudFront::Distribution
+        Properties:
+            DistributionConfig:
+                Enabled: true
+                IPV6Enabled: true
+                DefaultRootObject: index.html
+                PriceClass: !Ref PriceClass
+                HttpVersion: http2and3
+                Aliases:
+                    - !Ref DomainName
+                Origins:
+                    - DomainName: !GetAtt SiteBucket.RegionalDomainName
+                      Id: s3-origin
+                      OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+                      S3OriginConfig: {}
+                DefaultCacheBehavior:
+                    TargetOriginId: s3-origin
+                    ViewerProtocolPolicy: redirect-to-https
+                    AllowedMethods: [GET, HEAD, OPTIONS]
+                    CachedMethods: [GET, HEAD]
+                    Compress: true
+                    ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+                    ForwardedValues:
+                        QueryString: false
+                        Headers: [Origin]
+                        Cookies:
+                            Forward: none
+                    MinTTL: 0
+                    DefaultTTL: 86400
+                    MaxTTL: 31536000
+                CacheBehaviors:
+                    - PathPattern: assets/*
+                      TargetOriginId: s3-origin
+                      ViewerProtocolPolicy: redirect-to-https
+                      AllowedMethods: [GET, HEAD, OPTIONS]
+                      CachedMethods: [GET, HEAD]
+                      Compress: true
+                      ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+                      ForwardedValues:
+                          QueryString: false
+                          Cookies:
+                              Forward: none
+                      MinTTL: 0
+                      DefaultTTL: 31536000
+                      MaxTTL: 31536000
+                CustomErrorResponses:
+                    - ErrorCode: 404
+                      ResponseCode: 200
+                      ResponsePagePath: /404.html
+                      ErrorCachingMinTTL: 10
+                    - ErrorCode: 403
+                      ResponseCode: 200
+                      ResponsePagePath: /index.html
+                      ErrorCachingMinTTL: 10
+                Restrictions:
+                    GeoRestriction:
+                        RestrictionType: none
+                ViewerCertificate:
+                    AcmCertificateArn: !If [CreateCertificate, !Ref SiteCertificate, !Ref CertificateArn]
+                    SslSupportMethod: sni-only
+                    MinimumProtocolVersion: TLSv1.2_2021
+            Tags:
+                - Key: Project
+                  Value: pgp
+
+Outputs:
+    S3BucketName:
+        Description: S3 bucket — upload built site here.
+        Value: !Ref SiteBucket
+
+    CloudFrontDomainName:
+        Description: CloudFront domain. Create a CNAME pointing your domain to this.
+        Value: !GetAtt CloudFrontDistribution.DomainName
+
+    CloudFrontDistributionId:
+        Description: Distribution ID for cache invalidations.
+        Value: !Ref CloudFrontDistribution
+
+    CertificateArn:
+        Description: ACM certificate ARN.
+        Value: !If [CreateCertificate, !Ref SiteCertificate, !Ref CertificateArn]
+
+    ValidationCNAMEs:
+        Description: >
+            If a new cert was created, run this to get DNS validation CNAMEs.
+            Add them in Cloudflare to issue the certificate.
+        Value: !Sub
+            - |
+                aws acm describe-certificate \
+                  --region us-east-1 \
+                  --certificate-arn ${certArn} \
+                  --query "Certificate.DomainValidationOptions[*].{Domain:DomainName,CNAME_Name:ResourceRecord.Name,CNAME_Value:ResourceRecord.Value}" \
+                  --output table
+            - certArn: !If [CreateCertificate, !Ref SiteCertificate, !Ref CertificateArn]
+
+    NextSteps:
+        Description: Deployment instructions.
+        Value: !Sub
+            - |
+                ============================================================
+                DEPLOY — ${domain}
+                ============================================================
+
+                1. Deploy the stack:
+                   aws cloudformation deploy \
+                     --region ${region} \
+                     --stack-name pgp \
+                     --template-file cloudformation.yml
+
+                2. If a new cert was created, get validation CNAMEs:
+                   ${getValidationCommand}
+
+                   Add each CNAME in Cloudflare DNS (Proxy: OFF).
+                   Example:
+                     Name:  _abc123.${domain}
+                     Value: _xyz456.acm-validations.aws.
+
+                3. Add the site CNAME in Cloudflare:
+                     Name:  pgp
+                     Value: ${cfDomain}
+                     Proxy: OFF (DNS only)
+
+                4. Build and upload:
+                   aws s3 sync . s3://${domain}/ --delete \
+                     --exclude ".git/*" \
+                     --exclude ".github/*" \
+                     --exclude ".gitignore" \
+                     --exclude ".dockerignore" \
+                     --exclude "Dockerfile" \
+                     --exclude "cloudformation.yml" \
+                     --exclude "README.md" \
+                     --exclude "LICENSE" \
+                     --exclude "SECURITY.md"
+
+                5. Invalidate CloudFront cache:
+                   aws cloudfront create-invalidation \
+                     --distribution-id ${cfId} \
+                     --paths "/*"
+
+                6. Visit https://${domain}
+                ============================================================
+            - domain: !Ref DomainName
+              region: !Ref AWS::Region
+              cfDomain: !GetAtt CloudFrontDistribution.DomainName
+              cfId: !Ref CloudFrontDistribution
+              getValidationCommand: !Sub
+                  - |
+                      aws acm describe-certificate \
+                        --region us-east-1 \
+                        --certificate-arn ${certArn} \
+                        --query "Certificate.DomainValidationOptions[*].{Domain:DomainName,CNAME_Name:ResourceRecord.Name,CNAME_Value:ResourceRecord.Value}" \
+                        --output table
+                  - certArn: !If [CreateCertificate, !Ref SiteCertificate, !Ref CertificateArn]
