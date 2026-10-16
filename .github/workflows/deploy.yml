@@ -1,53 +1,67 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+name: Deploy to AWS
 
 on:
-  # Runs on pushes targeting the default branch
   push:
-    branches: ["main"]
-
-  # Allows you to run this workflow manually from the Actions tab
+    branches:
+      - main
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: sa-east-1
+  STACK_NAME: pgp
 
 jobs:
-  # Single deploy job since we're just deploying
   deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Remove git files
-        run: |
-          echo "Clean up files" &&
-          rm -rf .git &&
-          rm -rf .github &&
-          rm -rf .gitignore &&
-          rm -rf README.md &&
-          rm -rf LICENSE &&
-          rm -rf Dockerfile &&
-          rm -rf .dockerignore
-      - name: Setup Pages
-        uses: actions/configure-pages@v6
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v5
+      - uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
         with:
-          # Upload entire repository
-          path: '.'
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve AWS resources
+        id: aws-resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          bucket="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue | [0]" --output text)"
+          distribution="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue | [0]" --output text)"
+          test -n "$bucket" && test "$bucket" != "None"
+          test -n "$distribution" && test "$distribution" != "None"
+          echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
+          echo "distribution=$distribution" >> "$GITHUB_OUTPUT"
+
+      - name: Sync site to S3
+        run: aws s3 sync dist/ "s3://${{ steps.aws-resources.outputs.bucket }}/" --delete
+
+      - name: Invalidate CloudFront
+        run: aws cloudfront create-invalidation --distribution-id "${{ steps.aws-resources.outputs.distribution }}" --paths "/*"
+
+      - name: Summary
+        if: always()
+        env:
+          BRANCH_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## 🚀 Deploy to AWS"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            printf '| Branch | %s |\n' "$BRANCH_NAME"
+            printf '| Commit | %s |\n' "$COMMIT_SHA"
+            printf '| Status | %s |\n' "$JOB_STATUS"
+            echo "| Live URL | https://pgp.lbenicio.dev |"
+          } >> "$GITHUB_STEP_SUMMARY"
