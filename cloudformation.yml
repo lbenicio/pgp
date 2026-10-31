@@ -228,7 +228,7 @@ Resources:
                 ViewerCertificate:
                     AcmCertificateArn: !If [CreateCertificate, !Ref SiteCertificate, !Ref CertificateArn]
                     SslSupportMethod: sni-only
-                    MinimumProtocolVersion: TLSv1.2_2021
+                    MinimumProtocolVersion: TLSv1.3_2025
             Tags:
                 - Key: Project
                   Value: pgp
