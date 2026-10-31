@@ -275,7 +275,8 @@ Outputs:
                    aws cloudformation deploy \
                      --region ${region} \
                      --stack-name pgp \
-                     --template-file cloudformation.yml
+                     --template-file cloudformation.yml \
+                     --tags awsApplication=arn:aws:resource-groups:sa-east-1:527540700211:group/lbenicio-community/06owkw4s6gp5r894wctvv2jj5u
 
                 2. If a new cert was created, get validation CNAMEs:
                    ${getValidationCommand}
