@@ -5,14 +5,15 @@ deploy:
 		--region sa-east-1 \
 		--stack-name pgp \
 		--template-file cloudformation.yml \
-		--tags awsApplication=arn:aws:resource-groups:sa-east-1:527540700211:group/lbenicio-community/06owkw4s6gp5r894wctvv2jj5u
+		--parameter-overrides "CertificateArn=$${CERTIFICATE_ARN}" \
+		--tags Project=pgp
 
 sync:
 	aws s3 sync dist/ s3://pgp.lbenicio.dev/ --delete
 
 invalidate:
 	aws cloudfront create-invalidation \
-		--distribution-id EL38J3G514874 \
+		--distribution-id "$$(aws cloudformation describe-stacks --stack-name pgp --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue | [0]" --output text)" \
 		--paths "/*"
 
 all: deploy sync invalidate

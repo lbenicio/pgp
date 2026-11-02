@@ -16,7 +16,6 @@ Parameters:
         Description: >
             ARN of an existing ACM certificate in us-east-1 covering the domain.
             Leave empty to create a new one (stack must be deployed to us-east-1).
-        Default: arn:aws:acm:us-east-1:527540700211:certificate/ce8e9217-72ca-45de-a03c-b7557b0a7cdc
 
     PriceClass:
         Type: String
@@ -276,7 +275,9 @@ Outputs:
                      --region ${region} \
                      --stack-name pgp \
                      --template-file cloudformation.yml \
-                     --tags awsApplication=arn:aws:resource-groups:sa-east-1:527540700211:group/lbenicio-community/06owkw4s6gp5r894wctvv2jj5u
+                     --parameter-overrides \
+                       "CertificateArn=$CERTIFICATE_ARN" \
+                     --tags Project=pgp
 
                 2. If a new cert was created, get validation CNAMEs:
                    ${getValidationCommand}
