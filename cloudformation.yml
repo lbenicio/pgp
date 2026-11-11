@@ -10,6 +10,7 @@ Parameters:
         Type: String
         Description: Primary domain.
         Default: pgp.lbenicio.dev
+        AllowedPattern: "^[A-Za-z0-9.-]+$"
 
     CertificateArn:
         Type: String
@@ -129,6 +130,24 @@ Resources:
                           Value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
                           Override: true
 
+    HostAllowlistFunction:
+        Type: AWS::CloudFront::Function
+        Properties:
+            Name: pgp-host-allowlist
+            AutoPublish: true
+            FunctionConfig:
+                Comment: Allow requests only for the configured PGP hostname.
+                Runtime: cloudfront-js-2.0
+            FunctionCode: !Sub |
+                function handler(event) {
+                    var request = event.request;
+                    var host = request.headers.host && request.headers.host.value;
+                    if (!host || host.toLowerCase() !== '${DomainName}'.toLowerCase()) {
+                        return { statusCode: 403, statusDescription: 'Forbidden' };
+                    }
+                    return request;
+                }
+
     # ── CloudFront distribution ─────────────────────────────────────────────
     CloudFrontDistribution:
         Type: AWS::CloudFront::Distribution
@@ -152,6 +171,9 @@ Resources:
                     AllowedMethods: [GET, HEAD, OPTIONS]
                     CachedMethods: [GET, HEAD]
                     Compress: true
+                    FunctionAssociations:
+                        - EventType: viewer-request
+                          FunctionARN: !GetAtt HostAllowlistFunction.FunctionMetadata.FunctionARN
                     ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
                     ForwardedValues:
                         QueryString: false
@@ -168,6 +190,9 @@ Resources:
                       AllowedMethods: [GET, HEAD, OPTIONS]
                       CachedMethods: [GET, HEAD]
                       Compress: true
+                      FunctionAssociations:
+                          - EventType: viewer-request
+                            FunctionARN: !GetAtt HostAllowlistFunction.FunctionMetadata.FunctionARN
                       ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
                       ForwardedValues:
                           QueryString: false
