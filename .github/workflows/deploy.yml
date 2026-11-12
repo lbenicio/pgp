@@ -20,7 +20,9 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-24.04
-    environment: production
+    environment:
+      name: production
+      url: https://pgp.lbenicio.dev/
     steps:
       - uses: actions/checkout@v7
 
